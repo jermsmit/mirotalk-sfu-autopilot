@@ -4,7 +4,7 @@ A hardened, self-updating Docker deployment script for [MiroTalk SFU](https://gi
 
 Created by Jermal Smith.
 
-[![jermsmit/mirotalk-sfu-autopilot, explained in a one-minute video](https://gitdiagram.com/api/video/file?username=jermsmit&repo=mirotalk-sfu-autopilot&format=poster)](https://gitdiagram.com/jermsmit/mirotalk-sfu-autopilot/video)
+[![Watch a one-minute video tour of mirotalk-sfu-autopilot](https://img.youtube.com/vi/a4Lqw4HfLPU/maxresdefault.jpg)](https://youtu.be/a4Lqw4HfLPU)
 
 ## Why this exists
 
