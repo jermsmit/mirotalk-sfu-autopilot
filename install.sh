@@ -277,6 +277,10 @@ chmod 600 "${APP_DIR}/.autopilot.conf"
 #######################################
 # 10. Start the stack
 #######################################
+echo "==> Installing the host-protection toggle utility..."
+cp "${SCRIPT_DIR}/scripts/toggle-host-protection.sh" "${APP_DIR}/toggle-host-protection.sh"
+chmod +x "${APP_DIR}/toggle-host-protection.sh"
+
 echo "==> Pulling image and starting MiroTalk SFU..."
 docker compose pull
 docker compose up -d
@@ -399,6 +403,9 @@ Still needed on your side:
 
 5. Consider adding a TURN server (coturn) later for participants on
    strict or corporate networks, placeholders are in .env for it.
+
+6. To temporarily open access without generating credentials for a
+   guest, run: ${APP_DIR}/toggle-host-protection.sh
 
 Host login for the app itself:
    Username: ${HOST_USERNAME}

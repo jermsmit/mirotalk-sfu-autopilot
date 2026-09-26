@@ -35,6 +35,7 @@ This project is not affiliated with or endorsed by the MiroTalk SFU project.
 - Docker-based deployment using host networking, the simplest reliable way to satisfy mediasoup's dynamic UDP port requirements
 - Randomly generated JWT signing key, API key, session secret, and host password on every install, none of them left at default values
 - Host protection enabled by default, requiring a login to create or join rooms
+- A one-command toggle to temporarily open access and have it automatically re-lock itself, useful for letting in a guest without generating them credentials
 - UFW firewall configured automatically: SSH allowed, the app's web port restricted to your local network, only the WebRTC media port range exposed
 - fail2ban enabled for SSH
 - Optional automatic recovery from a changed public IP address
@@ -55,6 +56,7 @@ uninstall.sh                     Removes containers, timers, and firewall rules
 scripts/
   update-announced-ip.sh         Copied into your install directory by install.sh
   update-mirotalksfu.sh          Copied into your install directory by install.sh
+  toggle-host-protection.sh      Copied into your install directory by install.sh
 systemd/
   mirotalk-ip-watch.service      Reference copy, install.sh generates the real one
   mirotalk-ip-watch.timer        Reference copy, install.sh generates the real one
@@ -153,7 +155,36 @@ sudo systemctl disable --now mirotalk-ip-watch.timer
 sudo systemctl disable --now mirotalk-update.timer
 ```
 
-## Manual updates
+### Temporarily opening access
+
+Host protection is on by default and should generally stay that way. If you occasionally want to let someone in without generating them a login, `scripts/toggle-host-protection.sh` is copied into your install directory alongside the other automation scripts. Run it any time:
+
+```bash
+sudo /opt/mirotalksfu/toggle-host-protection.sh
+```
+
+It detects whether protection is currently on or off and asks accordingly:
+
+- If it's on, it offers to turn it off, and asks how many minutes until it should turn itself back on. Leave that blank to stay open until you run the script again manually.
+- If it's off, it offers to turn it back on immediately.
+
+The automatic re-enable uses a one-shot `systemd-run` timer, nothing persistent is installed for this, and running the script again before the timer fires cancels it cleanly rather than double-toggling.
+
+This only affects whether a login is required to create or start a room. It does not affect guests joining an existing room link, which never requires a login regardless of this setting; see "Do invited guests need to log in" logic covered in the host protection notes above. It also does not end any meeting already in progress; MiroTalk SFU rooms are not persisted server-side and disappear on their own once everyone leaves, but a room actively in use during an open window will keep running until people leave it, independent of this toggle.
+
+### Changing the host username and password
+
+Edit the `HOST_USERS` line in `.env`. The format is `username:password:displayname:allowed_rooms`, with `allowed_rooms` as `*` for all rooms or a comma-separated list; multiple users are separated by `|`.
+
+```bash
+cd /opt/mirotalksfu
+sed -i 's/^HOST_USERS=.*/HOST_USERS=newusername:newpassword:Host:*/' .env
+docker compose up -d --force-recreate mirotalksfu
+```
+
+Avoid `:` or `|` characters inside the username or password themselves, since those are the format's own separators.
+
+
 
 If you did not enable the automation timers, or want to update on demand:
 
