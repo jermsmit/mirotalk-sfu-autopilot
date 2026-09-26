@@ -4,6 +4,8 @@ A hardened, self-updating Docker deployment script for [MiroTalk SFU](https://gi
 
 Created by Jermal Smith.
 
+[![jermsmit/mirotalk-sfu-autopilot, explained in a one-minute video](https://gitdiagram.com/api/video/file?username=jermsmit&repo=mirotalk-sfu-autopilot&format=poster)](https://gitdiagram.com/jermsmit/mirotalk-sfu-autopilot/video)
+
 ## Why this exists
 
 MiroTalk SFU is a genuinely good self-hosted alternative to Zoom and Google Meet, and the project's own README gets you to a working local install quickly. What it does not cover is what happens after that: which system packages a production deployment actually needs, how to lock the server down instead of leaving every port open, how WebRTC media traffic behaves differently from ordinary web traffic when you are behind a router, and what happens to that setup six months later when your ISP hands you a new IP address or a new image is published upstream and nobody applies it.
