@@ -1,0 +1,12 @@
+# Reference copy. install.sh generates this file automatically with your
+# chosen time. Edit OnCalendar below if you set this up by hand instead.
+[Unit]
+Description=Run mirotalk-update daily at 4am
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

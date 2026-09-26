@@ -1,0 +1,11 @@
+# Reference copy. install.sh generates this file automatically with the
+# correct path for your install directory. If you installed to somewhere
+# other than /opt/mirotalksfu, edit the ExecStart line below to match.
+[Unit]
+Description=Check for and apply MiroTalk SFU image updates
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/mirotalksfu/update-mirotalksfu.sh

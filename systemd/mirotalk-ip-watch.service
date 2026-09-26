@@ -1,0 +1,11 @@
+# Reference copy. install.sh generates this file automatically with the
+# correct path for your install directory. If you installed to somewhere
+# other than /opt/mirotalksfu, edit the ExecStart line below to match.
+[Unit]
+Description=Update MiroTalk SFU announced IP if it changed
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/mirotalksfu/update-announced-ip.sh
