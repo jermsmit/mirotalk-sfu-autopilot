@@ -88,7 +88,7 @@ EOF
   cat > "${case_dir}/docker-compose.yml" <<'EOF'
 services:
   mirotalksfu:
-    image: mirotalk/sfu:autopilot-current
+    image: mirotalk/sfu:latest
 EOF
   cat > "${case_dir}/.autopilot-config-base.js" <<'EOF'
 const localSetting = 'default';
@@ -131,6 +131,8 @@ run_updater() {
 SUCCESS_DIR="${TEST_ROOT}/success"
 create_fixture "${SUCCESS_DIR}"
 run_updater "${SUCCESS_DIR}"
+grep -Fq 'image: mirotalk/sfu:autopilot-current' "${SUCCESS_DIR}/docker-compose.yml" || fail "legacy image reference was not migrated"
+grep -Fq 'pull_policy: never' "${SUCCESS_DIR}/docker-compose.yml" || fail "local image pull policy was not added"
 grep -Fq "const localSetting = 'customized';" "${SUCCESS_DIR}/app/src/config.js" || fail "local config change was lost"
 grep -Fq "const upstreamSetting = 'new';" "${SUCCESS_DIR}/app/src/config.js" || fail "upstream config change was not applied"
 cmp -s "${SUCCESS_DIR}/new-config.js" "${SUCCESS_DIR}/.autopilot-config-base.js" || fail "config baseline was not advanced"
@@ -153,6 +155,7 @@ cmp -s "${ROLLBACK_DIR}/expected-compose.yml" "${ROLLBACK_DIR}/docker-compose.ym
 cmp -s "${ROLLBACK_DIR}/expected-config.js" "${ROLLBACK_DIR}/app/src/config.js" || fail "config.js was not restored"
 cmp -s "${ROLLBACK_DIR}/expected-base.js" "${ROLLBACK_DIR}/.autopilot-config-base.js" || fail "config baseline changed after rollback"
 grep -Fq 'image tag mirotalk/sfu:autopilot-rollback mirotalk/sfu:autopilot-current' "${ROLLBACK_DIR}/docker.log" || fail "rollback image was not restored"
+grep -Fq 'image tag mirotalk/sfu:autopilot-rollback mirotalk/sfu:latest' "${ROLLBACK_DIR}/docker.log" || fail "legacy rollback image alias was not restored"
 
 CONFLICT_DIR="${TEST_ROOT}/conflict"
 create_fixture "${CONFLICT_DIR}"

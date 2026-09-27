@@ -57,7 +57,8 @@ PULL_LOG="$(mktemp)"
 TEMPLATE_FILE="$(mktemp)"
 ENV_TEMPLATE_FILE="$(mktemp)"
 MERGED_CONFIG_FILE="$(mktemp)"
-trap 'rm -f "${PULL_LOG}" "${TEMPLATE_FILE}" "${ENV_TEMPLATE_FILE}" "${MERGED_CONFIG_FILE}"' EXIT
+COMPOSE_MIGRATION_FILE="$(mktemp)"
+trap 'rm -f "${PULL_LOG}" "${TEMPLATE_FILE}" "${ENV_TEMPLATE_FILE}" "${MERGED_CONFIG_FILE}" "${COMPOSE_MIGRATION_FILE}"' EXIT
 
 if ! docker pull -q "${IMAGE}" > "${PULL_LOG}" 2>&1; then
   log "Could not check for updates (network or registry issue): $(cat "${PULL_LOG}")" warning
@@ -84,11 +85,30 @@ prune_backups '.env.[0-9]*'
 prune_backups 'docker-compose.yml.*'
 prune_backups 'config.js.*'
 
-if grep -q '^    image: mirotalk/sfu:latest$' docker-compose.yml; then
-  sed -i 's|^    image: mirotalk/sfu:latest$|    image: mirotalk/sfu:autopilot-current|' docker-compose.yml
-elif ! grep -q '^    image: mirotalk/sfu:autopilot-current$' docker-compose.yml; then
+if ! grep -Eq '^    image: mirotalk/sfu:(latest|autopilot-current)$' docker-compose.yml; then
   log "Unsupported image reference in docker-compose.yml; update aborted without changing the deployment." err
   exit 1
+fi
+awk '
+  /^    image: mirotalk\/sfu:(latest|autopilot-current)$/ {
+    print "    image: mirotalk/sfu:autopilot-current"
+    next
+  }
+  /^    pull_policy:/ {
+    print "    pull_policy: never"
+    next
+  }
+  { print }
+' docker-compose.yml > "${COMPOSE_MIGRATION_FILE}"
+if grep -q '^    pull_policy: never$' "${COMPOSE_MIGRATION_FILE}"; then
+  cat "${COMPOSE_MIGRATION_FILE}" > docker-compose.yml
+else
+  awk '
+    { print }
+    /^    image: mirotalk\/sfu:autopilot-current$/ {
+      print "    pull_policy: never"
+    }
+  ' "${COMPOSE_MIGRATION_FILE}" > docker-compose.yml
 fi
 
 if [[ -n "${RUNNING_IMAGE_ID}" ]]; then

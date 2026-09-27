@@ -299,6 +299,7 @@ cat > docker-compose.yml <<'EOF'
 services:
   mirotalksfu:
     image: mirotalk/sfu:autopilot-current
+    pull_policy: never
     container_name: mirotalksfu
     restart: unless-stopped
     network_mode: "host"
