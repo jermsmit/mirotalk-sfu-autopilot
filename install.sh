@@ -28,6 +28,20 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+valid_ipv4() {
+  local ip="$1" octet
+  local -a octets
+  IFS='.' read -r -a octets <<< "${ip}"
+  [[ ${#octets[@]} -eq 4 ]] || return 1
+  for octet in "${octets[@]}"; do
+    [[ "${octet}" =~ ^[0-9]{1,3}$ ]] && ((10#${octet} <= 255)) || return 1
+  done
+}
+
+valid_port() {
+  [[ "$1" =~ ^[0-9]+$ ]] && ((10#$1 >= 1 && 10#$1 <= 65535))
+}
+
 echo "============================================================"
 echo " MiroTalk SFU Autopilot - Installer"
 echo "============================================================"
@@ -44,36 +58,77 @@ fi
 read -rp "Install directory [/opt/mirotalksfu]: " APP_DIR
 APP_DIR="${APP_DIR:-/opt/mirotalksfu}"
 
+if [[ ! "${APP_DIR}" =~ ^/[A-Za-z0-9._/-]+$ || "${APP_DIR}" == "/" ]]; then
+  echo "Install directory must be an absolute path without spaces or shell metacharacters." >&2
+  exit 1
+fi
+
+EXISTING_INSTALLATION=false
+if [[ -e "${APP_DIR}/.git" || -e "${APP_DIR}/.env" || -e "${APP_DIR}/docker-compose.yml" || -e "${APP_DIR}/app/src/config.js" ]]; then
+  EXISTING_INSTALLATION=true
+  cat >&2 <<EOF
+WARNING: An existing MiroTalk installation was found at ${APP_DIR}.
+
+This installer is not an upgrade tool. Continuing will overwrite .env,
+docker-compose.yml, app/src/config.js, and CREDENTIALS.txt, and will generate
+new JWT, API, and host credentials. Existing clients and integrations may stop
+working. Use update-mirotalksfu.sh to update an installation without replacing
+its configuration and credentials.
+EOF
+  read -rp "Type OVERWRITE to continue with a destructive reinstall: " OVERWRITE_CONFIRM
+  if [[ "${OVERWRITE_CONFIRM}" != "OVERWRITE" ]]; then
+    echo "Aborted before making changes."
+    exit 1
+  fi
+fi
+
 DOMAIN=""
-while [[ -z "${DOMAIN}" ]]; do
+while [[ ! "${DOMAIN}" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]; do
   read -rp "Domain this server will be reachable at (e.g. meet.example.com): " DOMAIN
+  [[ -n "${DOMAIN}" ]] && [[ ! "${DOMAIN}" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]] && \
+    echo "Enter a valid DNS hostname, for example meet.example.com."
 done
 
 DEFAULT_LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 read -rp "This server's LAN IP [${DEFAULT_LAN_IP}]: " INTERNAL_IP
 INTERNAL_IP="${INTERNAL_IP:-${DEFAULT_LAN_IP}}"
-while [[ -z "${INTERNAL_IP}" ]]; do
-  read -rp "Could not auto-detect a LAN IP, please enter it: " INTERNAL_IP
+while ! valid_ipv4 "${INTERNAL_IP}"; do
+  read -rp "Enter a valid IPv4 LAN address: " INTERNAL_IP
 done
 
 DEFAULT_SUBNET="$(echo "${INTERNAL_IP}" | awk -F. '{print $1"."$2"."$3".0/24"}')"
 read -rp "Subnet allowed to reach the app port directly, i.e. your LAN/reverse-proxy network [${DEFAULT_SUBNET}]: " LAN_SUBNET
 LAN_SUBNET="${LAN_SUBNET:-${DEFAULT_SUBNET}}"
+if [[ ! "${LAN_SUBNET}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]]; then
+  echo "LAN subnet must use IPv4 CIDR notation, for example 192.168.1.0/24." >&2
+  exit 1
+fi
+valid_ipv4 "${LAN_SUBNET%/*}" || { echo "LAN subnet contains an invalid IPv4 address." >&2; exit 1; }
 
 read -rp "App port [3010]: " APP_PORT
 APP_PORT="${APP_PORT:-3010}"
+valid_port "${APP_PORT}" || { echo "App port must be between 1 and 65535." >&2; exit 1; }
 
-read -rp "Mediasoup UDP port range start [40000]: " RTC_MIN_PORT
+read -rp "Mediasoup UDP/TCP port range start [40000]: " RTC_MIN_PORT
 RTC_MIN_PORT="${RTC_MIN_PORT:-40000}"
-read -rp "Mediasoup UDP port range end [40100]: " RTC_MAX_PORT
+read -rp "Mediasoup UDP/TCP port range end [40100]: " RTC_MAX_PORT
 RTC_MAX_PORT="${RTC_MAX_PORT:-40100}"
+if ! valid_port "${RTC_MIN_PORT}" || ! valid_port "${RTC_MAX_PORT}" ||
+   ((10#${RTC_MIN_PORT} > 10#${RTC_MAX_PORT})); then
+  echo "RTC ports must be between 1 and 65535, with the start no greater than the end." >&2
+  exit 1
+fi
 
-read -rp "Require login to create/join rooms, host protection [Y/n]: " HP_ANSWER
+read -rp "Require a host login to create rooms, host protection [Y/n]: " HP_ANSWER
 HP_ANSWER="${HP_ANSWER:-Y}"
 if [[ "${HP_ANSWER}" =~ ^[Yy] ]]; then
   HOST_PROTECTED="true"
   read -rp "Host username [host]: " HOST_USERNAME
   HOST_USERNAME="${HOST_USERNAME:-host}"
+  if [[ ! "${HOST_USERNAME}" =~ ^[A-Za-z0-9_.@-]+$ ]]; then
+    echo "Host username may contain only letters, numbers, _, ., @, and -." >&2
+    exit 1
+  fi
 else
   HOST_PROTECTED="false"
   HOST_USERNAME="host"
@@ -98,6 +153,7 @@ PUBLIC_IP="$(curl -fsSL https://api.ipify.org || true)"
 if [[ -z "${PUBLIC_IP}" ]]; then
   read -rp "Could not auto-detect your public IP, enter it manually: " PUBLIC_IP
 fi
+valid_ipv4 "${PUBLIC_IP}" || { echo "Public IP must be a valid IPv4 address." >&2; exit 1; }
 echo "    Public IP: ${PUBLIC_IP}"
 
 echo
@@ -107,7 +163,7 @@ echo "  Domain:              ${DOMAIN}"
 echo "  LAN IP:              ${INTERNAL_IP}"
 echo "  LAN subnet:          ${LAN_SUBNET}"
 echo "  App port:            ${APP_PORT}"
-echo "  RTC UDP range:       ${RTC_MIN_PORT}-${RTC_MAX_PORT}"
+echo "  RTC UDP/TCP range:   ${RTC_MIN_PORT}-${RTC_MAX_PORT}"
 echo "  Host protected:      ${HOST_PROTECTED}"
 echo "  Public IP:           ${PUBLIC_IP}"
 echo "  Install automation:  ${AUTOMATION_ANSWER}"
@@ -118,6 +174,20 @@ CONFIRM="${CONFIRM:-Y}"
 if [[ ! "${CONFIRM}" =~ ^[Yy] ]]; then
   echo "Aborted, nothing was changed."
   exit 0
+fi
+
+if [[ "${EXISTING_INSTALLATION}" == "true" ]]; then
+  REINSTALL_BACKUP_DIR="${APP_DIR}/backups/reinstall-$(date -u +%Y%m%d-%H%M%S)"
+  mkdir -p "${REINSTALL_BACKUP_DIR}"
+  chmod 700 "${APP_DIR}/backups" "${REINSTALL_BACKUP_DIR}"
+  for BACKUP_FILE in .env docker-compose.yml app/src/config.js .autopilot-config-base.js CREDENTIALS.txt .autopilot.conf; do
+    if [[ -f "${APP_DIR}/${BACKUP_FILE}" ]]; then
+      mkdir -p "${REINSTALL_BACKUP_DIR}/$(dirname "${BACKUP_FILE}")"
+      cp -p "${APP_DIR}/${BACKUP_FILE}" "${REINSTALL_BACKUP_DIR}/${BACKUP_FILE}"
+    fi
+  done
+  chmod -R go-rwx "${REINSTALL_BACKUP_DIR}"
+  echo "Existing configuration backed up to ${REINSTALL_BACKUP_DIR}."
 fi
 
 #######################################
@@ -137,7 +207,7 @@ if ! command -v docker >/dev/null 2>&1; then
   curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
   chmod a+r /etc/apt/keyrings/docker.asc
   ARCH="$(dpkg --print-architecture)"
-  CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+  CODENAME="$(sed -n 's/^VERSION_CODENAME=//p' /etc/os-release | tr -d '\"')"
   echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${CODENAME} stable" \
     > /etc/apt/sources.list.d/docker.list
   apt-get update -y
@@ -145,6 +215,10 @@ if ! command -v docker >/dev/null 2>&1; then
   systemctl enable --now docker
 else
   echo "==> Docker already installed, skipping."
+fi
+if ! docker compose version >/dev/null 2>&1; then
+  echo "Docker Compose v2 is required but 'docker compose' is unavailable." >&2
+  exit 1
 fi
 
 #######################################
@@ -159,6 +233,8 @@ else
 fi
 cd "${APP_DIR}"
 cp -f app/src/config.template.js app/src/config.js
+cp -f app/src/config.template.js .autopilot-config-base.js
+chmod 600 .autopilot-config-base.js
 
 #######################################
 # 4. Generate secrets
@@ -166,6 +242,7 @@ cp -f app/src/config.template.js app/src/config.js
 echo "==> Generating secrets..."
 JWT_KEY="$(openssl rand -hex 32)"
 API_KEY_SECRET="$(openssl rand -hex 32)"
+OIDC_SECRET="$(openssl rand -hex 32)"
 HOST_PASSWORD="$(openssl rand -base64 18 | tr -d '=+/')"
 
 #######################################
@@ -181,6 +258,7 @@ SERVER_LISTEN_PORT=${APP_PORT}
 # The app itself stays plain HTTP: TLS is expected to be terminated by
 # your existing reverse proxy in front of this host.
 SERVER_HOST_URL=https://${DOMAIN}
+TRUST_PROXY=true
 
 # --- WebRTC media (mediasoup) ---
 # 0.0.0.0 = listen on all interfaces inside the container.
@@ -198,21 +276,17 @@ JWT_EXPIRATION=6h
 # --- REST API key, needed to call /api/v1/* endpoints ---
 API_KEY_SECRET=${API_KEY_SECRET}
 
-# --- Host protection: require login before creating/joining a room ---
+# --- Host protection: require host login to create rooms; guests may join ---
 # Format: username:password:displayname:allowed_rooms (allowed_rooms
 # omitted or '*' means all rooms). Multiple users separated by '|'.
 HOST_PROTECTED=${HOST_PROTECTED}
-HOST_USER_AUTH=${HOST_PROTECTED}
+HOST_USER_AUTH=false
 HOST_USERS=${HOST_USERNAME}:${HOST_PASSWORD}:Host:*
 
 # --- OIDC, optional single sign-on, off by default ---
 OIDC_ENABLED=false
+OIDC_SECRET=${OIDC_SECRET}
 
-# --- Optional: TURN server for participants behind strict/corporate NAT.
-#     Recommended if you are hosting from a home connection. Check the
-#     current MiroTalk SFU documentation for the exact TURN variable
-#     names before enabling this; they were not verified when this
-#     installer was written. ---
 EOF
 chmod 600 .env
 echo "    .env written and locked to root-only (chmod 600)."
@@ -224,25 +298,46 @@ echo "==> Writing docker-compose.yml, host networking mode..."
 cat > docker-compose.yml <<'EOF'
 services:
   mirotalksfu:
-    image: mirotalk/sfu:latest
+    image: mirotalk/sfu:autopilot-current
     container_name: mirotalksfu
     restart: unless-stopped
     network_mode: "host"
     env_file:
       - .env
     volumes:
-      - ./app/src/config.js:/src/config.js:ro
+      - ./app/src/config.js:/src/app/src/config.js:ro
     security_opt:
       - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:' + process.env.SERVER_LISTEN_PORT).then(r => process.exit(r.status < 500 ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 EOF
 
 #######################################
 # 7. Firewall
 #######################################
 echo "==> Configuring UFW..."
-ufw allow OpenSSH
+mapfile -t SSH_PORTS < <(sshd -T 2>/dev/null | awk '$1 == "port" { print $2 }' | sort -u)
+if [[ -n "${SSH_CONNECTION:-}" ]]; then
+  read -r _ _ _ SSH_CONNECTION_PORT <<< "${SSH_CONNECTION}"
+  SSH_PORTS+=("${SSH_CONNECTION_PORT}")
+fi
+if [[ ${#SSH_PORTS[@]} -eq 0 ]]; then
+  SSH_PORTS=(22)
+fi
+for SSH_PORT in "${SSH_PORTS[@]}"; do
+  if ! valid_port "${SSH_PORT}"; then
+    echo "Ignoring invalid SSH port reported by sshd: ${SSH_PORT}" >&2
+    continue
+  fi
+  ufw allow "${SSH_PORT}/tcp" comment 'SSH access'
+done
 ufw allow from "${LAN_SUBNET}" to any port "${APP_PORT}" proto tcp comment 'mirotalk app - LAN/reverse-proxy only'
 ufw allow "${RTC_MIN_PORT}:${RTC_MAX_PORT}/udp" comment 'mirotalk mediasoup RTC'
+ufw allow "${RTC_MIN_PORT}:${RTC_MAX_PORT}/tcp" comment 'mirotalk mediasoup TCP fallback'
 ufw --force enable
 ufw status verbose
 
@@ -250,7 +345,17 @@ ufw status verbose
 # 8. fail2ban
 #######################################
 echo "==> Enabling fail2ban for sshd..."
+FAIL2BAN_BACKUP_DIR="${APP_DIR}/backups/system"
+mkdir -p "${FAIL2BAN_BACKUP_DIR}"
+chmod 700 "${APP_DIR}/backups" "${FAIL2BAN_BACKUP_DIR}"
+if [[ -f /etc/fail2ban/jail.d/sshd.local ]] &&
+  ! grep -q '^# Managed by mirotalk-sfu-autopilot$' /etc/fail2ban/jail.d/sshd.local &&
+  [[ ! -f "${FAIL2BAN_BACKUP_DIR}/sshd.local.pre-autopilot" ]]; then
+  cp -p /etc/fail2ban/jail.d/sshd.local "${FAIL2BAN_BACKUP_DIR}/sshd.local.pre-autopilot"
+  chmod go-rwx "${FAIL2BAN_BACKUP_DIR}/sshd.local.pre-autopilot"
+fi
 cat > /etc/fail2ban/jail.d/sshd.local <<'EOF'
+# Managed by mirotalk-sfu-autopilot
 [sshd]
 enabled = true
 maxretry = 5
@@ -277,22 +382,23 @@ chmod 600 "${APP_DIR}/.autopilot.conf"
 #######################################
 # 10. Start the stack
 #######################################
-echo "==> Installing the host-protection toggle utility..."
+echo "==> Installing maintenance utilities..."
 cp "${SCRIPT_DIR}/scripts/toggle-host-protection.sh" "${APP_DIR}/toggle-host-protection.sh"
-chmod +x "${APP_DIR}/toggle-host-protection.sh"
+cp "${SCRIPT_DIR}/scripts/update-announced-ip.sh" "${APP_DIR}/update-announced-ip.sh"
+cp "${SCRIPT_DIR}/scripts/update-mirotalksfu.sh" "${APP_DIR}/update-mirotalksfu.sh"
+chmod +x "${APP_DIR}/toggle-host-protection.sh" "${APP_DIR}/update-announced-ip.sh" "${APP_DIR}/update-mirotalksfu.sh"
 
 echo "==> Pulling image and starting MiroTalk SFU..."
-docker compose pull
-docker compose up -d
+docker pull mirotalk/sfu:latest
+docker image tag mirotalk/sfu:latest mirotalk/sfu:autopilot-current
+docker compose up -d --wait --wait-timeout 120
+curl -fsS --max-time 10 "http://127.0.0.1:${APP_PORT}/" >/dev/null
 
 #######################################
 # 11. Automation timers, optional
 #######################################
 if [[ "${AUTOMATION_ANSWER}" =~ ^[Yy] ]]; then
-  echo "==> Installing automation scripts and timers..."
-  cp "${SCRIPT_DIR}/scripts/update-announced-ip.sh" "${APP_DIR}/update-announced-ip.sh"
-  cp "${SCRIPT_DIR}/scripts/update-mirotalksfu.sh" "${APP_DIR}/update-mirotalksfu.sh"
-  chmod +x "${APP_DIR}/update-announced-ip.sh" "${APP_DIR}/update-mirotalksfu.sh"
+  echo "==> Installing automation timers..."
 
   cat > /etc/systemd/system/mirotalk-ip-watch.service <<EOF
 [Unit]
@@ -365,6 +471,9 @@ Host login
 REST API key, Authorization header for /api/v1/*:
   ${API_KEY_SECRET}
 
+OIDC session secret, do not share:
+  ${OIDC_SECRET}
+
 JWT signing key, do not share:
   ${JWT_KEY}
 EOF
@@ -385,7 +494,7 @@ Container status:    docker compose -f ${APP_DIR}/docker-compose.yml ps
 Still needed on your side:
 
 1. Router or firewall port forward, if this server is behind NAT:
-   UDP ${RTC_MIN_PORT}-${RTC_MAX_PORT}  ->  ${INTERNAL_IP}
+  UDP/TCP ${RTC_MIN_PORT}-${RTC_MAX_PORT}  ->  ${INTERNAL_IP}
    This carries the actual audio and video, your reverse proxy cannot.
 
 2. Reverse proxy configuration:
@@ -401,8 +510,8 @@ Still needed on your side:
 4. Test from an actual outside network, not your own LAN, once DNS and
    port forwarding are in place.
 
-5. Consider adding a TURN server (coturn) later for participants on
-   strict or corporate networks, placeholders are in .env for it.
+5. TURN is optional. Consider it only if participant networks block
+  direct access to both the SFU UDP and TCP media ports.
 
 6. To temporarily open access without generating credentials for a
    guest, run: ${APP_DIR}/toggle-host-protection.sh

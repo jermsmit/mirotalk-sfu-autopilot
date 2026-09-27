@@ -1,0 +1,27 @@
+name: Shell validation
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install validation tools
+        run: sudo apt-get update && sudo apt-get install -y git shellcheck
+      - name: Run static checks
+        run: bash tests/static-checks.sh
+      - name: Verify systemd units
+        run: |
+          sudo install -d /opt/mirotalksfu
+          sudo install -m 0755 /dev/null /opt/mirotalksfu/update-announced-ip.sh
+          sudo install -m 0755 /dev/null /opt/mirotalksfu/update-mirotalksfu.sh
+          systemd-analyze verify systemd/*.service systemd/*.timer

@@ -34,25 +34,28 @@ This project is not affiliated with or endorsed by the MiroTalk SFU project.
 ## What you get
 
 - Interactive installer, prompts for your domain, network details, and preferences instead of requiring you to edit files by hand
-- Docker-based deployment using host networking, the simplest reliable way to satisfy mediasoup's dynamic UDP port requirements
+- Docker-based deployment using host networking, the simplest reliable way to satisfy mediasoup's UDP and TCP media port requirements
 - Randomly generated JWT signing key, API key, session secret, and host password on every install, none of them left at default values
-- Host protection enabled by default, requiring a login to create or join rooms
-- A one-command toggle to temporarily open access and have it automatically re-lock itself, useful for letting in a guest without generating them credentials
-- UFW firewall configured automatically: SSH allowed, the app's web port restricted to your local network, only the WebRTC media port range exposed
+- Host protection enabled by default, requiring a host login to create rooms while invited guests can join an existing room link
+- A one-command toggle to temporarily allow anyone to create a room and have it automatically re-lock itself
+- UFW firewall configured automatically: detected SSH ports allowed, the app's web port restricted to your trusted reverse-proxy network, and the WebRTC UDP/TCP media range exposed
 - fail2ban enabled for SSH
 - Optional automatic recovery from a changed public IP address
-- Optional automatic updates, with configuration backups before every applied update
+- Optional automatic updates with restricted configuration backups, health validation, and automatic image/configuration rollback
 - A clean uninstaller that reverses everything the installer changed
 
 ## What this does not do
 
 - It does not set up a reverse proxy or obtain a TLS certificate. You need an existing reverse proxy, for example Nginx Proxy Manager, Traefik, or Caddy, already handling HTTPS for your domain and pointed at this server.
-- It does not configure port forwarding on your router. If your server is behind NAT, you need to forward the WebRTC UDP port range yourself.
-- It does not set up a TURN server. This is optional, but recommended if you expect participants on strict corporate or hotel networks; see the notes below.
+- It does not configure port forwarding on your router. If your server is behind NAT, you need to forward the WebRTC UDP and TCP port range yourself.
+- It does not set up a TURN server. TURN is not required for normal SFU operation; see the notes below.
 
 ## Repository layout
 
 ```
+.github/
+  workflows/
+    ci.yml                        Ubuntu 22.04/24.04 validation workflow
 install.sh                       Interactive installer, run this first
 uninstall.sh                     Removes containers, timers, and firewall rules
 scripts/
@@ -64,11 +67,14 @@ systemd/
   mirotalk-ip-watch.timer        Reference copy, install.sh generates the real one
   mirotalk-update.service        Reference copy, install.sh generates the real one
   mirotalk-update.timer          Reference copy, install.sh generates the real one
+tests/
+  static-checks.sh               Syntax, ShellCheck, and regression assertions
+  update-lifecycle.sh            Mocked update, rollback, and merge-conflict tests
 LICENSE
 README.md
 ```
 
-The files under `systemd/` are provided for reference and manual setups. When you run `install.sh` with automation enabled, it generates its own copies of these unit files with the correct path for your chosen install directory, so you do not need to edit them yourself in the normal case.
+The files under `systemd/` are provided for reference and manual setups. When you run `install.sh` with automation enabled, it generates its own copies of these unit files with the correct path for your chosen install directory, so you do not need to edit them yourself in the normal case. The test suite uses mocked external services and does not modify the host firewall, systemd configuration, or Docker deployment.
 
 ## Prerequisites
 
@@ -90,13 +96,15 @@ The script will ask for:
 - Install directory (default `/opt/mirotalksfu`)
 - Your domain name
 - This server's LAN IP (auto-detected, confirm or override)
-- The subnet allowed to reach the app directly, normally your LAN or the subnet your reverse proxy lives on
+- The trusted subnet allowed to reach the app directly, normally the subnet containing your reverse proxy
 - The app port (default 3010)
-- The WebRTC UDP port range (default 40000-40100)
-- Whether to require login before creating or joining rooms
+- The WebRTC UDP/TCP port range (default 40000-40100)
+- Whether to require a host login before creating rooms
 - Whether to install the automation timers, and if so, what time of day to check for updates
 
 It then installs Docker if needed, clones MiroTalk SFU, generates secrets, writes the configuration, configures the firewall, and starts the container.
+
+The installer is not an upgrade command. If it detects an existing installation, it warns that credentials and configuration will be replaced and requires the exact confirmation `OVERWRITE`. Before proceeding, it creates a restrictive timestamped backup under `<install-dir>/backups/reinstall-<timestamp>/`. Use the installed update script for routine upgrades.
 
 ## After installation
 
@@ -104,7 +112,7 @@ The installer prints a summary at the end, and the same information is saved to 
 
 Three things still need to be done outside this script:
 
-1. **Port forward the WebRTC UDP range** (default 40000-40100) from your router to this server's LAN IP. This carries the actual audio and video. A reverse proxy only carries the initial HTTPS and WebSocket signaling traffic and cannot substitute for this.
+1. **Port forward the WebRTC UDP and TCP range** (default 40000-40100) from your router to this server's LAN IP. UDP is preferred and TCP provides fallback where UDP is blocked. A reverse proxy only carries HTTPS and WebSocket signaling traffic and cannot substitute for these media ports.
 2. **Configure your reverse proxy**: point your domain at this server's LAN IP and app port, over plain HTTP, and enable WebSocket support on that proxy host. Attach a valid TLS certificate for the domain.
 3. **Test from an actual outside network**, not your own LAN or Wi-Fi. Testing from inside your own network can hide NAT and port-forwarding issues that only show up from the outside.
 
@@ -124,7 +132,7 @@ No output means no change was detected, which is the expected outcome most of th
 
 ### Update checker
 
-Runs once a day, at the time you chose during install, and checks Docker Hub for a newer MiroTalk SFU image. If one exists, it backs up your `.env` and `docker-compose.yml` into `<install-dir>/backups/` before pulling and applying it. If nothing is new, it does nothing.
+Runs once a day, at the time you chose during install, and checks Docker Hub for a newer MiroTalk SFU image. Compose deploys the locally controlled `mirotalk/sfu:autopilot-current` tag rather than the mutable registry tag. When an update exists, the script backs up `.env`, `docker-compose.yml`, and `config.js`, retains the previous image as `mirotalk/sfu:autopilot-rollback`, and promotes the downloaded image only for this deployment. Missing non-sensitive settings from the current upstream `.env.template` are appended without replacing existing values; missing secret, token, password, and key settings are left for review in the restricted template snapshot. Local `config.js` customizations are merged with the new image's configuration using the installer-created `.autopilot-config-base.js` as the previous upstream baseline. If those changes conflict, the update stops before deployment and saves a restricted `backups/config.js.merge-conflict.<timestamp>` file for review. The updater then waits for the container to become healthy. A failed update automatically restores the previous image and configuration. If nothing is new, it does nothing.
 
 Check its activity:
 
@@ -132,13 +140,16 @@ Check its activity:
 journalctl -t mirotalk-update --since today
 ```
 
-Roll back a bad update:
+The updater rolls back automatically when startup or health validation fails. To manually restore the retained image and a specific configuration backup:
 
 ```bash
 cd /opt/mirotalksfu
 cp backups/.env.<timestamp> .env
 cp backups/docker-compose.yml.<timestamp> docker-compose.yml
-docker compose up -d --force-recreate mirotalksfu
+cp backups/config.js.<timestamp> app/src/config.js
+docker image tag mirotalk/sfu:autopilot-rollback mirotalk/sfu:autopilot-current
+docker image tag mirotalk/sfu:autopilot-rollback mirotalk/sfu:latest
+docker compose up -d --force-recreate --wait --wait-timeout 120 mirotalksfu
 ```
 
 ### Changing the update schedule
@@ -172,7 +183,7 @@ It detects whether protection is currently on or off and asks accordingly:
 
 The automatic re-enable uses a one-shot `systemd-run` timer, nothing persistent is installed for this, and running the script again before the timer fires cancels it cleanly rather than double-toggling.
 
-This only affects whether a login is required to create or start a room. It does not affect guests joining an existing room link, which never requires a login regardless of this setting; see "Do invited guests need to log in" logic covered in the host protection notes above. It also does not end any meeting already in progress; MiroTalk SFU rooms are not persisted server-side and disappear on their own once everyone leaves, but a room actively in use during an open window will keep running until people leave it, independent of this toggle.
+This only affects whether a host login is required to create or start a room. Invited guests can join an existing room link without a login because `HOST_USER_AUTH` remains disabled. It also does not end any meeting already in progress; MiroTalk SFU rooms are not persisted server-side and disappear once everyone leaves.
 
 ### Changing the host username and password
 
@@ -188,12 +199,11 @@ Avoid `:` or `|` characters inside the username or password themselves, since th
 
 
 
-If you did not enable the automation timers, or want to update on demand:
+If you did not enable the automation timers, or want to update on demand, run the installed updater directly so backups, health checks, and rollback remain active:
 
 ```bash
 cd /opt/mirotalksfu
-docker compose pull
-docker compose up -d
+sudo ./update-mirotalksfu.sh
 ```
 
 ## Uninstalling
@@ -207,14 +217,14 @@ This stops and removes the container, disables and removes the automation timers
 ## Security notes
 
 - All secrets, the JWT key, API key, session secret, and host password, are generated fresh on every install using `openssl rand`. Nothing is left at a template default.
-- `.env` and `CREDENTIALS.txt` are both created with `chmod 600`, root-only.
-- The app's web port is restricted by UFW to the subnet you specify during install, not exposed to the whole internet. Only the WebRTC media port range is opened broadly, since that traffic must be reachable by any participant's browser.
+- `.env`, `CREDENTIALS.txt`, `.autopilot.conf`, and update/reinstall backups receive restrictive permissions.
+- The app's web port is restricted by UFW to the trusted subnet you specify during install. Set this to the reverse proxy's narrowest practical subnet because MiroTalk trusts forwarded client IP headers. Only the WebRTC UDP/TCP media range is opened broadly.
 - fail2ban is enabled for SSH with a five-attempt threshold and a one-hour ban.
-- Host protection is on by default, requiring a username and password to create or join a room. You can disable this during install if you specifically want open access.
+- Host protection is on by default, requiring a username and password to create a room. Invited guests can join that active room without logging in.
 
 ### About TURN servers
 
-This installer does not set up a TURN server. For most home and small-office deployments, direct peer connections work fine. Some participants, particularly those on strict corporate networks, hotel Wi-Fi, or certain mobile carriers, may be unable to connect without one. If that becomes a recurring issue, look into running [coturn](https://github.com/coturn/coturn) alongside this deployment; the generated `.env` file includes commented-out placeholders for the relevant settings.
+MiroTalk SFU does not require a TURN server: clients connect directly to the SFU through its advertised UDP ports, with TCP fallback on the same range. TURN is an optional additional relay for participants whose networks block both direct paths. If that becomes a recurring issue, consult the current MiroTalk SFU documentation before deploying [coturn](https://github.com/coturn/coturn).
 
 ## License
 
